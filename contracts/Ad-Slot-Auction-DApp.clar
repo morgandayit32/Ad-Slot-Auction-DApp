@@ -17,6 +17,7 @@
 
 ;; Data Variables
 (define-data-var slot-counter uint u0)
+(define-data-var bid-history-counter uint u0)
 
 ;; Data Maps
 (define-map ad-slots
@@ -41,6 +42,16 @@
 
 (define-map user-balances
   principal
+  uint
+)
+
+(define-map bid-history
+  { slot-id: uint, bid-index: uint }
+  { bidder: principal, amount: uint, timestamp: uint }
+)
+
+(define-map slot-bid-count
+  uint
   uint
 )
 
@@ -81,6 +92,26 @@
 
 (define-private (is-auction-ended (end-block uint))
   (<= end-block stacks-block-height)
+)
+
+(define-private (get-slot-bid-count (slot-id uint))
+  (default-to u0 (map-get? slot-bid-count slot-id))
+)
+
+(define-private (record-bid-history (slot-id uint) (bidder principal) (amount uint))
+  (let (
+    (current-count (get-slot-bid-count slot-id))
+    (next-index (+ current-count u1))
+  )
+    (begin
+      (map-set bid-history
+        { slot-id: slot-id, bid-index: next-index }
+        { bidder: bidder, amount: amount, timestamp: stacks-block-height }
+      )
+      (map-set slot-bid-count slot-id next-index)
+      true
+    )
+  )
 )
 
 ;; Public Functions
@@ -139,6 +170,8 @@
           { slot-id: slot-id, bidder: tx-sender }
           { bid-amount: bid-amount, bid-time: stacks-block-height }
         )
+        
+        (record-bid-history slot-id tx-sender bid-amount)
         
         (ok true)
       )
@@ -291,5 +324,21 @@
     }
     { active: false, finalized: false, ended: true, has-bids: false }
   )
+)
+
+(define-read-only (get-bid-history-entry (slot-id uint) (bid-index uint))
+  (map-get? bid-history { slot-id: slot-id, bid-index: bid-index })
+)
+
+(define-read-only (get-total-bids (slot-id uint))
+  (ok (get-slot-bid-count slot-id))
+)
+
+(define-read-only (get-bid-history-range (slot-id uint) (start-index uint) (end-index uint))
+  (ok {
+    start: start-index,
+    end: end-index,
+    total-bids: (get-slot-bid-count slot-id)
+  })
 )
 
