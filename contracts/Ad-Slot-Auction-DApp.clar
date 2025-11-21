@@ -13,6 +13,8 @@
 (define-constant ERR_AUCTION_NOT_ENDED (err u405))
 (define-constant ERR_ALREADY_FINALIZED (err u406))
 (define-constant ERR_NO_BIDS (err u407))
+(define-constant ERR_BUY_NOW_NOT_SET (err u408))
+(define-constant ERR_INSUFFICIENT_BUY_NOW_AMOUNT (err u409))
 (define-constant COMMISSION_RATE u5)
 
 ;; Data Variables
@@ -31,7 +33,8 @@
     highest-bidder: (optional principal),
     highest-bid: uint,
     finalized: bool,
-    active: bool
+    active: bool,
+    buy-now-price: (optional uint)
   }
 )
 
@@ -115,7 +118,7 @@
 )
 
 ;; Public Functions
-(define-public (create-ad-slot (title (string-ascii 100)) (description (string-ascii 500)) (min-bid uint) (duration-blocks uint))
+(define-public (create-ad-slot (title (string-ascii 100)) (description (string-ascii 500)) (min-bid uint) (duration-blocks uint) (buy-now-price (optional uint)))
   (let (
     (slot-id (+ (var-get slot-counter) u1))
     (auction-end (+ stacks-block-height duration-blocks))
@@ -130,7 +133,8 @@
         highest-bidder: none,
         highest-bid: u0,
         finalized: false,
-        active: true
+        active: true,
+        buy-now-price: buy-now-price
       })
       (var-set slot-counter slot-id)
       (ok slot-id)
@@ -174,6 +178,53 @@
         (record-bid-history slot-id tx-sender bid-amount)
         
         (ok true)
+      )
+    )
+  )
+)
+
+(define-public (buy-now (slot-id uint))
+  (let (
+    (slot-data (unwrap! (map-get? ad-slots slot-id) ERR_SLOT_NOT_FOUND))
+    (buy-price (unwrap! (get buy-now-price slot-data) ERR_BUY_NOW_NOT_SET))
+    (current-balance (stx-get-balance tx-sender))
+  )
+    (asserts! (get active slot-data) ERR_AUCTION_ENDED)
+    (asserts! (not (get finalized slot-data)) ERR_ALREADY_FINALIZED)
+    (asserts! (>= current-balance buy-price) ERR_INSUFFICIENT_FUNDS)
+    
+    (let (
+      (creator (get creator slot-data))
+      (commission (calculate-commission buy-price))
+      (creator-payment (- buy-price commission))
+      (previous-bidder (get highest-bidder slot-data))
+      (previous-bid (get highest-bid slot-data))
+    )
+      (begin
+        (if (is-some previous-bidder)
+          (try! (as-contract (transfer-stx previous-bid tx-sender (unwrap-panic previous-bidder))))
+          true
+        )
+        
+        (try! (transfer-stx buy-price tx-sender (as-contract tx-sender)))
+        (try! (as-contract (transfer-stx creator-payment tx-sender creator)))
+        (try! (as-contract (transfer-stx commission tx-sender CONTRACT_OWNER)))
+        
+        (map-set ad-slots slot-id (merge slot-data {
+          highest-bidder: (some tx-sender),
+          highest-bid: buy-price,
+          finalized: true,
+          active: false
+        }))
+        
+        (record-bid-history slot-id tx-sender buy-price)
+        
+        (ok {
+          buyer: tx-sender,
+          price: buy-price,
+          creator-payment: creator-payment,
+          commission: commission
+        })
       )
     )
   )
